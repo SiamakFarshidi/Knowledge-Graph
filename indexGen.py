@@ -133,26 +133,6 @@ def isCorrectSentence(sentence):
     return True
 #-----------------------------------------------------------------------------------------------------------------------
 def indexingpipeline():
-    es = Elasticsearch("http://localhost:9200")
-    index = Index('notebooks', es)
-
-    if not es.indices.exists(index='notebooks'):
-        index.settings(
-            index={'mapping': {'ignore_malformed': True}}
-        )
-        index.create()
-    else:
-        es.indices.close(index='notebooks')
-        put = es.indices.put_settings(
-            index='notebooks',
-            body={
-                "index": {
-                    "mapping": {
-                        "ignore_malformed": True
-                    }
-                }
-            })
-        es.indices.open(index='notebooks')
     cnt=0
     root=(os. getcwd()+"/index_files/")
     for path, subdirs, files in os.walk(root):
@@ -160,9 +140,32 @@ def indexingpipeline():
             cnt=cnt+1
             indexfile= os.path.join(path, name)
             indexfile = open_file(indexfile)
-            res = es.index(index="notebooks", id= indexfile["git_url"], body=indexfile)
-            es.indices.refresh(index="notebooks")
+            elasticSearchIndexer('notebooks_test',indexfile["git_url"], indexfile)
             print(str(cnt)+" recode added! \n")
+#-----------------------------------------------------------------------------------------------------------------------
+def elasticSearchIndexer(IndexName, ID, content):
+    es = Elasticsearch("http://localhost:9200")
+    index = Index(IndexName, es)
+
+    if not es.indices.exists(index=IndexName):
+        index.settings(
+            index={'mapping': {'ignore_malformed': True}}
+        )
+        index.create()
+    else:
+        es.indices.close(index=IndexName)
+        put = es.indices.put_settings(
+            index=IndexName,
+            body={
+                "index": {
+                    "mapping": {
+                        "ignore_malformed": True
+                    }
+                }
+            })
+    es.indices.open(index=IndexName)
+    res = es.index(index=IndexName, id= ID, body=content)
+    es.indices.refresh(index=IndexName)
 #-----------------------------------------------------------------------------------------------------------------------
 def open_file(file):
     read_path = file
@@ -215,22 +218,26 @@ def classifyIndexes():
         f = open("Analysis/Low_description_files/"+file, 'w')
         f.write(json.dumps(indexfile))
         f.close()
+        elasticSearchIndexer('lowdescription', indexfile["git_url"], indexfile)
 
     for file in lstNoDescriptionFiles:
         indexfile = open_file(root+file)
         f = open("Analysis/No_description_files/"+file, 'w')
         f.write(json.dumps(indexfile))
         f.close()
+        elasticSearchIndexer('nodescription', indexfile["git_url"], indexfile)
 
     for file in lstNoEntityFiles:
         indexfile = open_file(root+file)
         f = open("Analysis/No_entity_files/"+file, 'w')
         f.write(json.dumps(indexfile))
         f.close()
+        elasticSearchIndexer('noentity', indexfile["git_url"], indexfile)
 
     for file in lstNoScriptFiles:
         indexfile = open_file(root+file)
         f = open("Analysis/No_script_files/"+file, 'w')
+        elasticSearchIndexer('noscript', indexfile["git_url"], indexfile)
         f.write(json.dumps(indexfile))
         f.close()
 
@@ -239,15 +246,45 @@ def classifyIndexes():
         f = open("Analysis/Perfect_files/"+file, 'w')
         f.write(json.dumps(indexfile))
         f.close()
+        elasticSearchIndexer('perfect', indexfile["git_url"], indexfile)
 
     for file in lstWorstFiles:
         indexfile = open_file(root+file)
         f = open("Analysis/Worst_files/"+file, 'w')
         f.write(json.dumps(indexfile))
         f.close()
+        elasticSearchIndexer('worst', indexfile["git_url"], indexfile)
 #-----------------------------------------------------------------------------------------------------------------------
+def extract_queries():
+    queries={}
+    root=(os. getcwd()+"/index_files/")
+    for path, subdirs, files in os.walk(root):
+        for name in files:
+            indexfile= os.path.join(path, name)
+            indexfile = open_file(indexfile)
+            entities=(indexfile['entities'].replace('(','').replace(')','').replace('\'','')).split(',')
+            for entity in entities:
+                if entity not in queries:
+                    queries[entity]=1
+                else:
+                    queries[entity] +=1
+
+    sorted_dictionaries = sorted(queries.items(), key=lambda x: x[1], reverse=True)
+
+    queries.clear()
+    queries={}
+    for entity in sorted_dictionaries:
+        if entity[1]>5 and len(entity[0].strip())>1:
+            queries[entity[0].strip()]=entity[1]
+
+    f = open("Analysis/queries.json", 'w')
+    f.write(json.dumps(queries))
+    f.close()
+#-----------------------------------------------------------------------------------------------------------------------
+
+#----------------------------------------------------------------------------------------------------------------------- Pipeline
 #indexGen()
 #indexingpipeline()
-#-----------------------------------------------------------------------------------------------------------------------
-# Testing and analysis
-classifyIndexes()
+#----------------------------------------------------------------------------------------------------------------------- Testing and analysis
+#classifyIndexes()
+#extract_queries()
