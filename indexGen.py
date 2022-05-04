@@ -1,4 +1,8 @@
 from knowledgeGraph import get_entity, get_relation, show
+from elasticsearch import Elasticsearch
+from elasticsearch_dsl import Search, Q, Index
+import os
+from elasticsearch_dsl.query import MatchAll
 import re
 import sys
 import csv
@@ -76,7 +80,8 @@ def indexGen():
                 temp_data["html_url"] = url
                 temp_data["git_url"] = url
                 temp_data["script"] = extractLibs(row[10])
-                generate_knowledgeGraph(lstDescrition)
+                temp_data["entities"]= generate_knowledgeGraph(lstDescrition)
+
                 filename= re.sub(r'[^A-Za-z0-9 ]+', '',name)+"_"+"_"+str( row[5])
                 f = open("index_files/"+filename+".json", 'w+')
                 f.write(json.dumps(temp_data))
@@ -102,16 +107,24 @@ def extractLibs(PyScript):
     return strLibSet
 #-----------------------------------------------------------------------------------------------------------------------
 def generate_knowledgeGraph(lstText):
+    lstEntities=set()
+    entities=""
     for text in lstText:
         text=text.strip()+"."
-        if(isCorrectSentence(text)):
-            print(text)
-            output = get_entity(text)
-            print(output)
-            output = get_relation(text)
-            print(output)
-            show(text)
-            s=input()
+        #if(isCorrectSentence(text)):
+        #print("\n --------------------------------- \n")
+        #print(text)
+        if len(text)>40:
+            output_entitiy = get_entity(text)
+            output_relation = get_relation(text)
+            if output_entitiy and output_relation and output_entitiy[0] and output_entitiy[1]:
+                tupple=(output_entitiy, output_relation)
+                lstEntities.add(tupple)
+        #show(text)
+        #s=input()
+    for entity in lstEntities:
+        entities += str(entity)+ " "
+    return entities
 #-----------------------------------------------------------------------------------------------------------------------
 def isCorrectSentence(sentence):
     matches = tool.check(sentence)
@@ -119,4 +132,122 @@ def isCorrectSentence(sentence):
         return False
     return True
 #-----------------------------------------------------------------------------------------------------------------------
-indexGen()
+def indexingpipeline():
+    es = Elasticsearch("http://localhost:9200")
+    index = Index('notebooks', es)
+
+    if not es.indices.exists(index='notebooks'):
+        index.settings(
+            index={'mapping': {'ignore_malformed': True}}
+        )
+        index.create()
+    else:
+        es.indices.close(index='notebooks')
+        put = es.indices.put_settings(
+            index='notebooks',
+            body={
+                "index": {
+                    "mapping": {
+                        "ignore_malformed": True
+                    }
+                }
+            })
+        es.indices.open(index='notebooks')
+    cnt=0
+    root=(os. getcwd()+"/index_files/")
+    for path, subdirs, files in os.walk(root):
+        for name in files:
+            cnt=cnt+1
+            indexfile= os.path.join(path, name)
+            indexfile = open_file(indexfile)
+            res = es.index(index="notebooks", id= indexfile["git_url"], body=indexfile)
+            es.indices.refresh(index="notebooks")
+            print(str(cnt)+" recode added! \n")
+#-----------------------------------------------------------------------------------------------------------------------
+def open_file(file):
+    read_path = file
+    with open(read_path, "r", errors='ignore') as read_file:
+        data = json.load(read_file)
+    return data
+#-----------------------------------------------------------------------------------------------------------------------
+def classifyIndexes():
+
+    lstLowDescriptionFiles=[]
+    lstNoDescriptionFiles=[]
+    lstNoEntityFiles=[]
+    lstNoScriptFiles=[]
+    lstPerfectFiles=[]
+    lstWorstFiles=[]
+
+    root=(os. getcwd()+"/index_files/")
+    for path, subdirs, files in os.walk(root):
+        for name in files:
+            indexfile= os.path.join(path, name)
+            indexfile = open_file(indexfile)
+
+            if len(indexfile['description'])>0 and len(indexfile['description'])<50 :
+                lstLowDescriptionFiles.append(name)
+
+            if indexfile['description']=="":
+                lstNoDescriptionFiles.append(name)
+
+            if indexfile['entities']=="":
+                lstNoEntityFiles.append(name)
+
+            if indexfile['script']=="":
+                lstNoScriptFiles.append(name)
+
+            if len(indexfile['description'])>50 and indexfile['entities']!="" and  indexfile['script']!="":
+                lstPerfectFiles.append(name)
+
+            if len(indexfile['description'])<50 and indexfile['entities']=="" and  indexfile['script']=="":
+                lstWorstFiles.append(name)
+
+    print("lstLowDescriptionFiles: " + str(len(lstLowDescriptionFiles)))
+    print("lstNoDescriptionFiles: " + str(len(lstNoDescriptionFiles)))
+    print("lstNoEntityFiles: " + str(len(lstNoEntityFiles)))
+    print("lstNoScriptFiles: " + str(len(lstNoScriptFiles)))
+    print("lstPerfetcFiles: " + str(len(lstPerfectFiles)))
+    print("lstWorstFiles: " + str(len(lstWorstFiles)))
+
+    for file in lstLowDescriptionFiles:
+        indexfile = open_file(root+file)
+        f = open("Analysis/Low_description_files/"+file, 'w')
+        f.write(json.dumps(indexfile))
+        f.close()
+
+    for file in lstNoDescriptionFiles:
+        indexfile = open_file(root+file)
+        f = open("Analysis/No_description_files/"+file, 'w')
+        f.write(json.dumps(indexfile))
+        f.close()
+
+    for file in lstNoEntityFiles:
+        indexfile = open_file(root+file)
+        f = open("Analysis/No_entity_files/"+file, 'w')
+        f.write(json.dumps(indexfile))
+        f.close()
+
+    for file in lstNoScriptFiles:
+        indexfile = open_file(root+file)
+        f = open("Analysis/No_script_files/"+file, 'w')
+        f.write(json.dumps(indexfile))
+        f.close()
+
+    for file in lstPerfectFiles:
+        indexfile = open_file(root+file)
+        f = open("Analysis/Perfect_files/"+file, 'w')
+        f.write(json.dumps(indexfile))
+        f.close()
+
+    for file in lstWorstFiles:
+        indexfile = open_file(root+file)
+        f = open("Analysis/Worst_files/"+file, 'w')
+        f.write(json.dumps(indexfile))
+        f.close()
+#-----------------------------------------------------------------------------------------------------------------------
+#indexGen()
+#indexingpipeline()
+#-----------------------------------------------------------------------------------------------------------------------
+# Testing and analysis
+classifyIndexes()
