@@ -11,6 +11,8 @@ from inspect import getmembers, isfunction
 from modulefinder import ModuleFinder
 import language_tool_python
 tool = language_tool_python.LanguageTool('en-US')
+import spacy
+spacy_nlp  = spacy.load('en_core_web_md')
 #-----------------------------------------------------------------------------------------------------------------------
 def pythonLibraries(filePath):
     lstLibraries=set()
@@ -256,16 +258,30 @@ def classifyIndexes():
         elasticSearchIndexer('worst', indexfile["git_url"], indexfile)
 #-----------------------------------------------------------------------------------------------------------------------
 def extract_queries():
+    nonQueries=["it", "they", "we", "us", "them", "our", "is", "be", "be you", "be we", "www", "that",
+                "have","have you", "one", "be who", "others", "make we", "have which", "need we", "be we",
+                "the", "be that", "which", "let s", "be which", "etc", "be us", "be s", "way", "need that",
+                "e.",  "use that","me", "be model", "use s", "do that", "be image", "call that", "m you", "1e", "some"]
     queries={}
-    root=(os. getcwd()+"/index_files/")
+    root=(os. getcwd()+"/Analysis/")
     for path, subdirs, files in os.walk(root):
         for name in files:
             indexfile= os.path.join(path, name)
+            print(indexfile)
+
             indexfile = open_file(indexfile)
             entities=(indexfile['entities'].replace('(','').replace(')','').replace('\'','')).split(',')
             for entity in entities:
                 if entity not in queries:
-                    queries[entity]=1
+                    queries[entity.lower()]=1
+                else:
+                    queries[entity] +=1
+
+            entities=(indexfile['script'].replace('.',' ').replace('_',' ').replace('-',' ')).split(' ')
+
+            for entity in entities:
+                if entity not in queries:
+                    queries[entity.lower()]=1
                 else:
                     queries[entity] +=1
 
@@ -274,17 +290,123 @@ def extract_queries():
     queries.clear()
     queries={}
     for entity in sorted_dictionaries:
-        if entity[1]>5 and len(entity[0].strip())>1:
-            queries[entity[0].strip()]=entity[1]
+        ent=entity[0].strip()
+        if entity[1]>2 and len(ent)>1 and not ent.isnumeric():
+            if ent not in nonQueries:
+                queries[ent]=entity[1]
 
     f = open("Analysis/queries.json", 'w')
     f.write(json.dumps(queries))
     f.close()
 #-----------------------------------------------------------------------------------------------------------------------
+def getSimilarity(query, text):
+    w1= spacy_nlp(query.lower())
+    w2= spacy_nlp(text.lower())
+    similarity=w1.similarity(w2)
+    #print(similarity)
+    return similarity
+#-----------------------------------------------------------------------------------------------------------------------
+def getPositive(query, threshold, filePath):
+    lstpositives=set()
+    lstnegatives=set()
+    root=(os. getcwd()+"/Analysis/"+filePath+"/")
+
+    for path, subdirs, files in os.walk(root):
+        for name in files:
+            indexfile= os.path.join(path, name)
+            indexfile = open_file(indexfile)
+            text=indexfile['description']+indexfile['script']+indexfile['entities']
+
+            if getSimilarity(query, text) >= threshold:
+                lstpositives.add(indexfile['git_url'])
+            else:
+                lstnegatives.add(indexfile['git_url'])
+
+    return list(lstpositives), list(lstnegatives)
+#-----------------------------------------------------------------------------------------------------------------------
+def calculateMetrics(query, index,queryFields, positives, negatives):
+    lstResults=getSearchResults(query,index, queryFields)
+    results=[]
+
+    TP=0
+    FP=0
+    TN=0
+    FN=0
+
+    for res in lstResults:
+        result=res['_source']
+        results.append(result['git_url'])
+
+    for result in results:
+
+        if result in positives and result not in negatives:
+            TP=TP+1
+
+        elif result not in positives and result in negatives:
+            FP=FP+1
+
+    for neg in negatives:
+        if neg not in results:
+            TN=TN+1
+
+    for pos in positives:
+        if pos not in results:
+            FN=FN+1
+
+    return   TP,FP, TN, FN
+#----------------------------------------------------------------------------------------------------------------------- Pipeline
+def calculate_similarity(filePath,index):
+    queries = open_file("Analysis/queries.json")
+
+    total_sim=0
+
+    for query in queries:
+        positives, negatives= getPositive(query, 0.2, filePath)
+
+        TP,FP, TN, FN =calculateMetrics(query,index, ['description', 'script', 'entities'], positives, negatives)
+
+        print("Query: " + query)
+        print("TP : " + str(TP))
+        print("FP : " + str(FP))
+        print("TN : " + str(TN))
+        print("FN : " + str(FN))
+
+#-----------------------------------------------------------------------------------------------------------------------
+def getSearchResults(query, index, searchFields):
+    es = Elasticsearch("http://localhost:9200")
+    user_request = "some_param"
+    query_body = {
+        "query": {
+            "bool": {
+                "must": {
+                    "multi_match" : {
+                        "query": query,
+                        "fields": searchFields,
+                        "type": "best_fields",
+                        "minimum_should_match": "50%"
+                    }
+                },
+            }
+        },
+    }
+    results = es.search(index=index, body=query_body)
+
+    return results['hits']['hits']
+#-----------------------------------------------------------------------------------------------------------------------
+def indexingSelectedIndexes(filePath,index):
+    root=(os. getcwd()+"/Analysis/"+filePath+"/")
+    for path, subdirs, files in os.walk(root):
+        for name in files:
+            indexfile= os.path.join(path, name)
+            indexfile = open_file(indexfile)
+            elasticSearchIndexer(index, indexfile["git_url"], indexfile)
+            print("Added " + name)
 
 #----------------------------------------------------------------------------------------------------------------------- Pipeline
 #indexGen()
 #indexingpipeline()
 #----------------------------------------------------------------------------------------------------------------------- Testing and analysis
 #classifyIndexes()
+#indexingSelectedIndexes('Selected_perfect_files','selectedperfect')
 #extract_queries()
+calculate_similarity('Selected_perfect_files','selectedperfect')
