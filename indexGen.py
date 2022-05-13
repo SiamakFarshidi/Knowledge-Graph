@@ -13,6 +13,7 @@ import language_tool_python
 tool = language_tool_python.LanguageTool('en-US')
 import spacy
 spacy_nlp  = spacy.load('en_core_web_md')
+similarity_threshold=0.8
 #-----------------------------------------------------------------------------------------------------------------------
 def pythonLibraries(filePath):
     lstLibraries=set()
@@ -43,6 +44,17 @@ def cleanhtml(raw_html):
 
     return cleantext, lstText
 #-----------------------------------------------------------------------------------------------------------------------
+def addExtraContextualInformation(description):
+    lstextra=[]
+    ontoClasses = open_file("classessOfOntologies.json")
+    description=description.lower()
+    for cls in ontoClasses:
+        for onto in ontoClasses[cls]:
+            onto=onto.lower()
+            if (onto in description) or (getSimilarity(onto, description) > similarity_threshold):
+                lstextra.append(onto)
+    return str(lstextra)
+#-----------------------------------------------------------------------------------------------------------------------
 def indexGen():
     maxInt = sys.maxsize
     while True:
@@ -66,9 +78,8 @@ def indexGen():
                 name= re.sub('[\W_ ]+', ' ', row[1]).replace('ipynb','')
                 title= re.sub('[\W_ ]+', ' ', row[7])
 
-
                 description,lstDescrition=cleanhtml(row[6]+row[8])
-
+                entitiesOfKnowledgeGraph= generate_knowledgeGraph(lstDescrition)
                 url=row[9]
                 temp_data = {}
                 temp_data["name"] = name
@@ -82,8 +93,8 @@ def indexGen():
                 temp_data["html_url"] = url
                 temp_data["git_url"] = url
                 temp_data["script"] = extractLibs(row[10])
-                temp_data["entities"]= generate_knowledgeGraph(lstDescrition)
-
+                temp_data["entities"]= entitiesOfKnowledgeGraph
+                temp_data["extra"]= addExtraContextualInformation(description)
                 filename= re.sub(r'[^A-Za-z0-9 ]+', '',name)+"_"+"_"+str( row[5])
                 f = open("index_files/"+filename+".json", 'w+')
                 f.write(json.dumps(temp_data))
@@ -409,4 +420,5 @@ def indexingSelectedIndexes(filePath,index):
 #classifyIndexes()
 #indexingSelectedIndexes('Selected_perfect_files','selectedperfect')
 #extract_queries()
-calculate_similarity('Selected_perfect_files','selectedperfect')
+#calculate_similarity('Selected_perfect_files','selectedperfect')
+#addExtraContextualInformation("")
