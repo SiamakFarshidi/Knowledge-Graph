@@ -7,12 +7,13 @@ import re
 import sys
 import csv
 import json
+import glob
 from inspect import getmembers, isfunction
 from modulefinder import ModuleFinder
 import language_tool_python
 tool = language_tool_python.LanguageTool('en-US')
 import spacy
-spacy_nlp  = spacy.load('en_core_web_md')
+spacy_nlp  = spacy.load('en_core_web_sm')
 similarity_threshold=0.8
 #-----------------------------------------------------------------------------------------------------------------------
 def pythonLibraries(filePath):
@@ -147,7 +148,8 @@ def isCorrectSentence(sentence):
 #-----------------------------------------------------------------------------------------------------------------------
 def indexingpipeline():
     cnt=0
-    root=(os. getcwd()+"/index_files/")
+    root=(os. getcwd()+"/Analysis/Testset")
+    print(root)
     for path, subdirs, files in os.walk(root):
         for name in files:
             cnt=cnt+1
@@ -186,6 +188,14 @@ def open_file(file):
         data = json.load(read_file)
     return data
 #-----------------------------------------------------------------------------------------------------------------------
+def removeAllFiles():
+    directories=["Low_description_files", "No_description_files", "No_entity_files","No_script_files", "Perfect_files", "No_extra_files"]
+    for dir in directories:
+        files = glob.glob('Analysis/'+dir+'/*')
+        for f in files:
+            os.remove(f)
+
+#-----------------------------------------------------------------------------------------------------------------------
 def classifyIndexes():
 
     lstLowDescriptionFiles=[]
@@ -193,7 +203,7 @@ def classifyIndexes():
     lstNoEntityFiles=[]
     lstNoScriptFiles=[]
     lstPerfectFiles=[]
-    lstWorstFiles=[]
+    lstNoExtraFiles=[]
 
     root=(os. getcwd()+"/index_files/")
     for path, subdirs, files in os.walk(root):
@@ -216,15 +226,18 @@ def classifyIndexes():
             if len(indexfile['description'])>50 and indexfile['entities']!="" and  indexfile['script']!="":
                 lstPerfectFiles.append(name)
 
-            if len(indexfile['description'])<50 and indexfile['entities']=="" and  indexfile['script']=="":
-                lstWorstFiles.append(name)
+            extra=str(indexfile['extra']).replace('\"','').replace('[','').replace(']','').replace(',','').replace('\'','')
+            if extra=='':
+                lstNoExtraFiles.append(name)
 
     print("lstLowDescriptionFiles: " + str(len(lstLowDescriptionFiles)))
     print("lstNoDescriptionFiles: " + str(len(lstNoDescriptionFiles)))
     print("lstNoEntityFiles: " + str(len(lstNoEntityFiles)))
     print("lstNoScriptFiles: " + str(len(lstNoScriptFiles)))
     print("lstPerfetcFiles: " + str(len(lstPerfectFiles)))
-    print("lstWorstFiles: " + str(len(lstWorstFiles)))
+    print("lstNoExtraFiles: " + str(len(lstNoExtraFiles)))
+
+    removeAllFiles()
 
     for file in lstLowDescriptionFiles:
         indexfile = open_file(root+file)
@@ -261,18 +274,20 @@ def classifyIndexes():
         f.close()
         elasticSearchIndexer('perfect', indexfile["git_url"], indexfile)
 
-    for file in lstWorstFiles:
+    for file in lstNoExtraFiles:
         indexfile = open_file(root+file)
-        f = open("Analysis/Worst_files/"+file, 'w')
+        f = open("Analysis/No_extra_files/"+file, 'w')
+        indexfile['extra']= str(indexfile['extra']).replace('\"','').replace('[','').replace(']','').replace(',','').replace('\'','')
         f.write(json.dumps(indexfile))
         f.close()
-        elasticSearchIndexer('worst', indexfile["git_url"], indexfile)
+        elasticSearchIndexer('extra', indexfile["git_url"], indexfile)
 #-----------------------------------------------------------------------------------------------------------------------
 def extract_queries():
     nonQueries=["it", "they", "we", "us", "them", "our", "is", "be", "be you", "be we", "www", "that",
                 "have","have you", "one", "be who", "others", "make we", "have which", "need we", "be we",
                 "the", "be that", "which", "let s", "be which", "etc", "be us", "be s", "way", "need that",
-                "e.",  "use that","me", "be model", "use s", "do that", "be image", "call that", "m you", "1e", "some"]
+                "e.",  "use that","me", "be model", "use s", "do that", "be image", "call that", "m you", "1e", "some",
+                "{}", "get", "you", "when", "where", "why","typical",""]
     queries={}
     root=(os. getcwd()+"/Analysis/")
     for path, subdirs, files in os.walk(root):
@@ -281,6 +296,7 @@ def extract_queries():
             print(indexfile)
 
             indexfile = open_file(indexfile)
+
             entities=(indexfile['entities'].replace('(','').replace(')','').replace('\'','')).split(',')
             for entity in entities:
                 if entity not in queries:
@@ -296,7 +312,15 @@ def extract_queries():
                 else:
                     queries[entity] +=1
 
-    sorted_dictionaries = sorted(queries.items(), key=lambda x: x[1], reverse=True)
+            entities=(indexfile['extra'].replace('[','').replace(']','').replace('\'','').replace(',','')).split(' ')
+
+            for entity in entities:
+                if entity not in queries:
+                    queries[entity.lower()]=1
+                else:
+                    queries[entity] +=1
+
+    sorted_dictionaries = sorted(queries.items(), key=lambda x: x[1])
 
     queries.clear()
     queries={}
@@ -310,32 +334,25 @@ def extract_queries():
     f.write(json.dumps(queries))
     f.close()
 #-----------------------------------------------------------------------------------------------------------------------
-def getSimilarity(query, text):
+def get_cosine_sim(query, text):
     w1= spacy_nlp(query.lower())
     w2= spacy_nlp(text.lower())
     similarity=w1.similarity(w2)
     #print(similarity)
     return similarity
 #-----------------------------------------------------------------------------------------------------------------------
-def getPositive(query, threshold, filePath):
-    lstpositives=set()
-    lstnegatives=set()
-    root=(os. getcwd()+"/Analysis/"+filePath+"/")
+def get_jaccard_sim(str1, str2):
+    a = set(str1.split())
+    b = set(str2.split())
+    c = a.intersection(b)
+    if ((len(a) + len(b) - len(c))>0) :
+        sim = float(len(c)) / (len(a) + len(b) - len(c))
+    else :
+        sim=0
+    return sim
 
-    for path, subdirs, files in os.walk(root):
-        for name in files:
-            indexfile= os.path.join(path, name)
-            indexfile = open_file(indexfile)
-            text=indexfile['description']+indexfile['script']+indexfile['entities']
-
-            if getSimilarity(query, text) >= threshold:
-                lstpositives.add(indexfile['git_url'])
-            else:
-                lstnegatives.add(indexfile['git_url'])
-
-    return list(lstpositives), list(lstnegatives)
 #-----------------------------------------------------------------------------------------------------------------------
-def calculateMetrics(query, index,queryFields, positives, negatives):
+def calculateMetrics(query, index, queryFields, positives, negatives):
     lstResults=getSearchResults(query,index, queryFields)
     results=[]
 
@@ -372,9 +389,9 @@ def calculate_similarity(filePath,index):
     total_sim=0
 
     for query in queries:
-        positives, negatives= getPositive(query, 0.2, filePath)
+        positives, negatives= getPositiveNagativeSets(query, 0.5, filePath)
 
-        TP,FP, TN, FN =calculateMetrics(query,index, ['description', 'script', 'entities'], positives, negatives)
+        TP,FP, TN, FN =calculateMetrics(query,index, ['description', 'script', 'entities', 'extra'], positives, negatives)
 
         print("Query: " + query)
         print("TP : " + str(TP))
@@ -394,7 +411,7 @@ def getSearchResults(query, index, searchFields):
                         "query": query,
                         "fields": searchFields,
                         "type": "best_fields",
-                        "minimum_should_match": "50%"
+                        "minimum_should_match": "100%"
                     }
                 },
             }
@@ -413,12 +430,300 @@ def indexingSelectedIndexes(filePath,index):
             elasticSearchIndexer(index, indexfile["git_url"], indexfile)
             print("Added " + name)
 
+#-----------------------------------------------------------------------------------------------------------------------
+def getPotentialQueries(text,filename):
+    lstqueries=[]
+    indexfile = open_file(os. getcwd()+filename)
+
+    for query in indexfile:
+        matched=False
+        if len(query.split()) == 1:
+            lsttext=text.split()
+            for txt in lsttext:
+                if (query not in lstqueries) and (query==txt or get_jaccard_sim(query,txt)>0.5):
+                    lstqueries.append(query)
+                    matched=True
+                    break
+        if not(matched):
+            lsttext= text.split('.')
+            for txt in lsttext:
+                if (query not in lstqueries) and  (get_jaccard_sim(query,txt)>0.5):
+
+                    lstqueries.append(query)
+                    matched=True
+                    break
+
+    return lstqueries
+#-----------------------------------------------------------------------------------------------------------------------
+def findPotentialQueries():
+    lstTestset=set()
+    directories=["Low_description_files", "No_description_files", "No_entity_files","No_script_files","No_extra_files", "Perfect_files"]
+    cnt=1
+    for dir in directories:
+        root=(os. getcwd()+"/Analysis/"+dir+"/")
+        for path, subdirs, files in os.walk(root):
+            for name in files:
+                if name not in lstTestset:
+                    lstTestset.add(name)
+                    indexfile= os.path.join(path, name)
+                    indexfile = open_file(indexfile)
+                    f = open("Analysis/Testset/"+name, 'w')
+                    indexfile["label"]= dir
+                    #---------------------------------------------------------------------------------------------------
+                    allQueries=[]
+
+                    description_queries=getPotentialQueries(indexfile["description"], "/Analysis/queries.json")
+
+                    for query in description_queries:
+                        if query not in allQueries:
+                            allQueries.append(query)
+                        else:
+                            description_queries.remove(query)
+
+                    indexfile["potential_description_queries"]=description_queries
+                    indexfile["potential_description_queries_len"]=len(description_queries)
+
+                    script_queries=getPotentialQueries(indexfile["script"], "/Analysis/queries.json")
+
+                    for query in script_queries:
+                        if query not in allQueries:
+                            allQueries.append(query)
+                        else:
+                            script_queries.remove(query)
+
+                    indexfile["potential_script_queries"]=script_queries
+                    indexfile["potential_script_queries_len"]=len(script_queries)
+
+                    entities_queries=getPotentialQueries(str(indexfile["entities"]), "/Analysis/queries.json")
+
+                    for query in entities_queries:
+                        if query not in allQueries:
+                            allQueries.append(query)
+                        else:
+                            entities_queries.remove(query)
+
+                    indexfile["potential_entities_queries"]=entities_queries
+                    indexfile["potential_entities_queries_len"]=len(entities_queries)
+
+                    txtExtra=str(indexfile["extra"]).replace("\'","").replace("[","").replace("]","").replace("\'","")
+                    extra_queries=getPotentialQueries((txtExtra), "/Analysis/queries.json")
+                    for query in extra_queries:
+                        if query not in allQueries:
+                            allQueries.append(query)
+                        else:
+                            extra_queries.remove(query)
+
+                    indexfile["potential_extra_queries"]=extra_queries
+                    indexfile["potential_extra_queries_len"]=len(extra_queries)
+
+                    indexfile["all_components_potential_queries_len"]=len(allQueries)
+                    #---------------------------------------------------------------------------------------------------
+
+                    elasticSearchIndexer('testset', indexfile["git_url"], indexfile)
+                    f.write(json.dumps(indexfile))
+                    f.close()
+                    print(str(cnt)+" : "+ dir+ " : " + name)
+                    cnt=cnt+1
+#-----------------------------------------------------------------------------------------------------------------------
+def getPositiveNagativeSets(query, threshold, filePath):
+    lstpositives=set()
+    lstnegatives=set()
+    root=(os. getcwd()+"/Analysis/"+filePath+"/")
+
+    for path, subdirs, files in os.walk(root):
+        for name in files:
+            indexfile= os.path.join(path, name)
+            indexfile = open_file(indexfile)
+            text=indexfile['description']+indexfile['script']+indexfile['entities']+indexfile['extra']
+
+            if get_jaccard_sim(query, text) >= threshold:
+                lstpositives.add(indexfile['git_url'])
+            else:
+                lstnegatives.add(indexfile['git_url'])
+
+    return list(lstpositives), list(lstnegatives)
+#-----------------------------------------------------------------------------------------------------------------------
+def experimentDB():
+
+    for query in indexfile:
+        print(query)
+        results=getSearchResults(query, "testset", ['description', 'script', 'entities', 'extra'])
+        if len(results)>0:
+            results=results[0]['_source']
+            text= str(results['description'])+str(results['script'])+str(results['entities'])+str(results['extra'])
+            print(get_jaccard_sim(query, text))
+        print("--------------------")
+#-----------------------------------------------------------------------------------------------------------------------
+def getMetrics(testFieldQueries,testField, searchSpace):
+    TP=0
+    FP=0
+    FN=0
+    TN=0
+
+    queries = open_file(os. getcwd()+"/Analysis/queries.json")
+
+    for query in queries:
+        if query not in searchSpace:
+            TN=TN+1
+
+    for query in testFieldQueries:
+        if query in testField:
+            TP=TP+1
+        else:
+            FP=FP+1
+
+    FN=len(queries)-(TP+FP+TN)
+    return str(TP), str(FP), str(TN),str(FN)
+#-----------------------------------------------------------------------------------------------------------------------
+def calculateStatistics():
+    root=(os. getcwd()+"/Analysis/Testset")
+    queries = open_file(os. getcwd()+"/Analysis/queries.json")
+    csvFile="url,label, descriptions, scripts, entities, extra, all ,names, TP_desc, FP_desc, TN_desc,FN_desc,  TP_script, FP_script, TN_script,FN_script,  TP_ent, FP_ent, TN_ent,FN_ent , TP_extra, FP_extra, TN_extra, FN_extra \n"
+    cnt=1
+    for path, subdirs, files in os.walk(root):
+        for name in files:
+            print(cnt)
+            print(name)
+            cnt=cnt+1
+            indexfile= os.path.join(path, name)
+            indexfile = open_file(indexfile)
+
+            TP=0
+            FP=0
+            FN=0
+            TN=0
+
+            description=indexfile['description'].split()
+            script=indexfile['script'].split()
+            entities=indexfile['entities'].split()
+            extra=indexfile['extra'].split()
+
+
+            TP_desc, FP_desc, TN_desc,FN_desc = getMetrics(indexfile['potential_description_queries'],indexfile['description'],
+                                       [*indexfile['potential_description_queries'],*description, *script, *entities, *extra] )
+
+            TP_script, FP_script, TN_script,FN_script = getMetrics(indexfile['potential_script_queries'],indexfile['script'],
+                                       [*indexfile['potential_description_queries'], *indexfile['potential_script_queries'],*description, *script, *entities, *extra] )
+
+            TP_ent, FP_ent, TN_ent,FN_ent = getMetrics(indexfile['potential_entities_queries'],indexfile['entities'],
+                                       [*indexfile['potential_description_queries'], *indexfile['potential_entities_queries'],*description, *script, *entities, *extra] )
+
+            TP_extra, FP_extra, TN_extra, FN_extra = getMetrics(indexfile['potential_extra_queries'],indexfile['extra'],
+                                       [*indexfile['potential_description_queries'], *indexfile['potential_extra_queries'], *description, *script, *entities, *extra] )
+
+
+            row =indexfile['html_url']+","+ \
+                 indexfile['label']+','+ \
+                 str(indexfile['potential_description_queries_len'])+','+ \
+                 str(indexfile['potential_script_queries_len'])+','+ \
+                 str(indexfile['potential_entities_queries_len'])+','+ \
+                 str(indexfile['potential_extra_queries_len'])+','+ \
+                 str(indexfile['all_components_potential_queries_len'])+','+ \
+                 indexfile['name']+','+ \
+                 TP_desc+','+ \
+                 FP_desc+','+ \
+                 TN_desc+','+ \
+                 FN_desc+','+ \
+                 TP_script+','+ \
+                 FP_script+','+ \
+                 TN_script+','+ \
+                 FN_script+','+ \
+                 TP_ent+','+ \
+                 FP_ent+','+ \
+                 TN_ent+','+ \
+                 FN_ent +','+ \
+                 TP_extra+','+ \
+                 FP_extra+','+ \
+                 TN_extra+','+ \
+                 FN_extra +'\n'
+
+            csvFile=csvFile+row
+
+    f = open("Analysis/analysis.csv", 'w')
+    f.write(csvFile)
+    f.close()
+
+#-----------------------------------------------------------------------------------------------------------------------
+
+def totalCalculateStatistics():
+    root=(os. getcwd()+"/Analysis/Testset")
+    queries = open_file(os. getcwd()+"/Analysis/queries.json")
+    csvFile="url,label, descriptions, scripts, entities, extra, all ,names, TP,FP, TN, FN \n"
+    cnt=1
+    for path, subdirs, files in os.walk(root):
+        for name in files:
+            print(cnt)
+            print(name)
+            cnt=cnt+1
+            indexfile= os.path.join(path, name)
+            indexfile = open_file(indexfile)
+
+            TP=0
+            FP=0
+            FN=0
+            TN=0
+
+            for query in queries:
+                if ((query  not in indexfile['potential_description_queries']) and (query  not in indexfile['description'].split())) and \
+                        ((query not in indexfile['potential_script_queries']) and (query not in indexfile['script'].split())) and \
+                        ((query not in indexfile['potential_entities_queries']) and (query not in indexfile['entities'].split())) and \
+                        ((query  not in indexfile['potential_extra_queries']) and (query not in indexfile['extra'].split())):
+                    TN=TN+1
+                else:
+                    FN=FN+1
+
+            for query in indexfile['potential_description_queries']:
+                if query in indexfile['description']:
+                    TP=TP+1
+                else:
+                    FP=FP+1
+
+            for query in indexfile['potential_script_queries']:
+                if query in indexfile['script']:
+                    TP=TP+1
+                else:
+                    FP=FP+1
+
+            for query in indexfile['potential_entities_queries']:
+                if query in indexfile['entities']:
+                    TP=TP+1
+                else:
+                    FP=FP+1
+
+            for query in indexfile['potential_extra_queries']:
+                if query in indexfile['extra']:
+                    TP=TP+1
+                else:
+                    FP=FP+1
+
+            row =indexfile['html_url']+","+\
+                 indexfile['label']+','+ \
+                 str(indexfile['potential_description_queries_len'])+','+ \
+                 str(indexfile['potential_script_queries_len'])+','+ \
+                 str(indexfile['potential_entities_queries_len'])+','+ \
+                 str(indexfile['potential_extra_queries_len'])+','+ \
+                 str(indexfile['all_components_potential_queries_len'])+','+ \
+                 indexfile['name']+','+ \
+                 str (TP)+","+ \
+                 str(FP)+","+ \
+                 str(TN)+","+ \
+                 str((TP+FP+TN)-len(queries)) +"\n"
+
+
+            csvFile=csvFile+row
+
+    f = open("Analysis/analysis.csv", 'w')
+    f.write(csvFile)
+    f.close()
 #----------------------------------------------------------------------------------------------------------------------- Pipeline
 #indexGen()
 #indexingpipeline()
 #----------------------------------------------------------------------------------------------------------------------- Testing and analysis
 #classifyIndexes()
-#indexingSelectedIndexes('Selected_perfect_files','selectedperfect')
 #extract_queries()
-#calculate_similarity('Selected_perfect_files','selectedperfect')
+#findPotentialQueries()
+#calculateStatistics()
+#-----------------------------------------------------------------------------------------------------------------------
+#calculate_similarity('Testset','testset')
 #addExtraContextualInformation("")
+indexingpipeline()
